@@ -1,0 +1,8 @@
+# Ignore everything
+*
+
+# Except these files
+!trello_telegram_bot.py
+!mini_app.html
+!.gitignore
+!README.md
