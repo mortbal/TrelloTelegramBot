@@ -29,26 +29,53 @@ def is_allowed_group(update: Update) -> bool:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command and show mini app button"""
-    # Check if message is from allowed group
+    """Handle /start command"""
+    if not update.message:
+        return
+
     if not is_allowed_group(update):
         return
 
-    # Create button that opens the mini app
+    await update.message.reply_text(
+        "Welcome to Trello Bot! 👋\n\n"
+        "Use /trello to access Trello management menu."
+    )
+
+
+async def trello(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /trello command and show Trello management menu"""
+    if not update.message:
+        return
+
+    if not is_allowed_group(update):
+        return
+
+    # Create inline keyboard with Trello management options
     keyboard = [
-        [InlineKeyboardButton("🚀 Open Menu", web_app=WebAppInfo(url=MINI_APP_URL))]
+        [InlineKeyboardButton("➕ New Task", callback_data='new_task')],
+        [InlineKeyboardButton("🌅 Start Day", callback_data='start_day'),
+         InlineKeyboardButton("🌙 End Day", callback_data='end_day')],
+        [InlineKeyboardButton("📅 Start Week", callback_data='start_week'),
+         InlineKeyboardButton("📊 End Week", callback_data='end_week')],
+        [InlineKeyboardButton("📈 Last Day Report", callback_data='report_day'),
+         InlineKeyboardButton("📉 Last Week Report", callback_data='report_week')],
+        [InlineKeyboardButton("✅ Mark First Task Done", callback_data='task_done')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "Welcome to Trello Bot! 👋\n\n"
-        "Click the button below to open the menu:",
+        "🗂 Trello Management Menu\n\n"
+        "Choose an action:",
         reply_markup=reply_markup
     )
 
 
 async def show(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /show command"""
+    # Check if message exists
+    if not update.message:
+        return
+
     # Check if message is from allowed group
     if not is_allowed_group(update):
         return
@@ -60,6 +87,10 @@ async def show(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle data sent from the mini app"""
+    # Check if message exists
+    if not update.message:
+        return
+
     # Check if message is from allowed group
     if not is_allowed_group(update):
         return
@@ -75,29 +106,36 @@ async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks from inline keyboard"""
-    # Check if message is from allowed group
     if not is_allowed_group(update):
         return
 
     query = update.callback_query
     await query.answer()  # Acknowledge the button click
 
-    if query.data == 'start_action':
-        await query.edit_message_text(
-            "You clicked: START button ✅\n\n"
-            "Command received: start"
-        )
-    elif query.data == 'show_action':
-        await query.edit_message_text(
-            "You clicked: SHOW button ✅\n\n"
-            "Command received: show"
-        )
+    # Handle different button actions
+    if query.data == 'new_task':
+        await query.message.reply_text("➕ Creating new task...")
+    elif query.data == 'start_day':
+        await query.message.reply_text("🌅 Starting day...")
+    elif query.data == 'end_day':
+        await query.message.reply_text("🌙 Ending day...")
+    elif query.data == 'start_week':
+        await query.message.reply_text("📅 Starting week...")
+    elif query.data == 'end_week':
+        await query.message.reply_text("📊 Ending week...")
+    elif query.data == 'report_day':
+        await query.message.reply_text("📈 Generating last day report...")
+    elif query.data == 'report_week':
+        await query.message.reply_text("📉 Generating last week report...")
+    elif query.data == 'task_done':
+        await query.message.reply_text("✅ Marking first task as done...")
 
 
 async def setup_commands(app: Application):
     """Set up bot commands for the menu button"""
     commands = [
         BotCommand("start", "Start the bot"),
+        BotCommand("trello", "Open Trello management menu"),
         BotCommand("show", "Show something")
     ]
     await app.bot.set_my_commands(commands)
@@ -116,6 +154,7 @@ def main():
 
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("trello", trello))
     app.add_handler(CommandHandler("show", show))
 
     # Add web app data handler
