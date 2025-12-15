@@ -410,9 +410,17 @@ def generate_previous_day_report():
     return message
 
 
-def generate_today_report():
-    """Generate today's report"""
-    today = datetime.now().date()
+def generate_today_report(start_time=None, end_time=None):
+    """Generate today's report - optionally filter by time range"""
+    if start_time and end_time:
+        # Use provided time range
+        start_dt = datetime.fromisoformat(start_time)
+        end_dt = datetime.fromisoformat(end_time)
+    else:
+        # Default: use today
+        today = datetime.now().date()
+        start_dt = datetime.combine(today, datetime.min.time())
+        end_dt = datetime.now()
 
     # Fetch DONE tasks from Trello
     params = {'key': API_KEY, 'token': TOKEN}
@@ -426,8 +434,8 @@ def generate_today_report():
             if MY_MEMBER_ID in card.get('idMembers', []):
                 due_date = card.get('due')
                 if due_date:
-                    task_date = datetime.fromisoformat(due_date.replace('Z', '+00:00')).date()
-                    if task_date == today:
+                    task_dt = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
+                    if start_dt <= task_dt <= end_dt:
                         tasks.append({
                             'name': card['name'],
                             'shortUrl': card.get('shortUrl', ''),
@@ -436,19 +444,25 @@ def generate_today_report():
 
     # Format report
     if tasks:
-        message = f"📊 <b>Today's Report ({today})</b>\n\n"
+        message = f"📊 <b>Today's Report</b>\n\n"
         for task in tasks:
             message += f"• {task['name']} - <a href=\"{task['shortUrl']}\">🔗 open</a>\n"
     else:
-        message = f"No tasks completed today"
+        message = f"No tasks completed"
 
     return message
 
 
-def generate_previous_week_report():
-    """Generate previous week report"""
-    today = datetime.now().date()
-    seven_days_ago = today - timedelta(days=7)
+def generate_previous_week_report(start_time=None, end_time=None):
+    """Generate previous week report - optionally filter by time range"""
+    if start_time and end_time:
+        # Use provided time range
+        start_dt = datetime.fromisoformat(start_time)
+        end_dt = datetime.fromisoformat(end_time)
+    else:
+        # Default: last 7 days
+        end_dt = datetime.now()
+        start_dt = end_dt - timedelta(days=7)
 
     # Fetch DONE tasks from Trello
     params = {'key': API_KEY, 'token': TOKEN}
@@ -462,12 +476,12 @@ def generate_previous_week_report():
             if MY_MEMBER_ID in card.get('idMembers', []):
                 due_date = card.get('due')
                 if due_date:
-                    task_date = datetime.fromisoformat(due_date.replace('Z', '+00:00')).date()
-                    if seven_days_ago <= task_date <= today:
+                    task_dt = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
+                    if start_dt <= task_dt <= end_dt:
                         tasks.append({
                             'name': card['name'],
                             'shortUrl': card.get('shortUrl', ''),
-                            'due': task_date
+                            'due': task_dt
                         })
 
     # Sort by date
@@ -475,11 +489,12 @@ def generate_previous_week_report():
 
     # Format report
     if tasks:
-        message = f"📈 <b>Previous Week Report ({seven_days_ago} to {today})</b>\n\n"
+        message = f"📈 <b>Week Report</b>\n\n"
         for task in tasks:
-            message += f"• {task['name']} ({task['due']}) - <a href=\"{task['shortUrl']}\">🔗 open</a>\n"
+            task_date = task['due'].strftime('%Y-%m-%d')
+            message += f"• {task['name']} ({task_date}) - <a href=\"{task['shortUrl']}\">🔗 open</a>\n"
     else:
-        message = f"No tasks completed in the past 7 days"
+        message = f"No tasks completed"
 
     return message
 
@@ -702,20 +717,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle Start Day button
     if query.data == 'start_day_btn':
-        chat_id = query.message.chat_id
         await query.message.delete()
 
-        # Update JSON to set day_started = true
+        # Update JSON to set day_started = true and record start time
         json_path = get_json_path()
+        start_time = datetime.now().isoformat()
+
         if os.path.exists(json_path):
             with open(json_path, 'r') as f:
                 data = json.load(f)
             data['day_started'] = True
+            data['day_start_time'] = start_time
             data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         else:
             data = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "day_started": True,
+                "day_start_time": start_time,
                 "todo": [],
                 "doing": [],
                 "done": []
@@ -723,8 +741,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         with open(json_path, 'w') as f:
             json.dump(data, f, indent=2)
-
-        await context.bot.send_message(chat_id=chat_id, text="✅ Day started")
 
     # Handle End Day button
     elif query.data == 'end_day_btn':
@@ -736,16 +752,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(json_path):
             with open(json_path, 'r') as f:
                 data = json.load(f)
+
+            # Get start time for report (default to yesterday at 7 AM if not found)
+            start_time = data.get('day_start_time')
+            if not start_time:
+                yesterday_7am = (datetime.now() - timedelta(days=1)).replace(hour=7, minute=0, second=0, microsecond=0)
+                start_time = yesterday_7am.isoformat()
+
+            end_time = datetime.now().isoformat()
+
             data['day_started'] = False
             data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             with open(json_path, 'w') as f:
                 json.dump(data, f, indent=2)
 
-            await context.bot.send_message(chat_id=chat_id, text="✅ Day ended")
-
-            # Generate today's report
-            message = generate_today_report()
+            # Generate today's report using actual work period
+            message = generate_today_report(start_time, end_time)
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
 
     # Handle Get Tasks button
@@ -778,21 +801,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle Start Week button
     elif query.data == 'start_week_btn':
-        chat_id = query.message.chat_id
         await query.message.delete()
 
-        # Update JSON to set week_started = true
+        # Update JSON to set week_started = true and record start time
         json_path = get_json_path()
+        start_time = datetime.now().isoformat()
+
         if os.path.exists(json_path):
             with open(json_path, 'r') as f:
                 data = json.load(f)
             data['week_started'] = True
+            data['week_start_time'] = start_time
             data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         else:
             data = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "day_started": False,
                 "week_started": True,
+                "week_start_time": start_time,
                 "todo": [],
                 "doing": [],
                 "done": []
@@ -800,8 +826,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         with open(json_path, 'w') as f:
             json.dump(data, f, indent=2)
-
-        await context.bot.send_message(chat_id=chat_id, text="✅ Week started")
 
     # Handle End Week button
     elif query.data == 'end_week_btn':
@@ -813,16 +837,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(json_path):
             with open(json_path, 'r') as f:
                 data = json.load(f)
+
+            # Get start time for report (default to 7 days ago at 7 AM if not found)
+            start_time = data.get('week_start_time')
+            if not start_time:
+                seven_days_ago_7am = (datetime.now() - timedelta(days=7)).replace(hour=7, minute=0, second=0, microsecond=0)
+                start_time = seven_days_ago_7am.isoformat()
+
+            end_time = datetime.now().isoformat()
+
             data['week_started'] = False
             data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             with open(json_path, 'w') as f:
                 json.dump(data, f, indent=2)
 
-            await context.bot.send_message(chat_id=chat_id, text="✅ Week ended")
-
-            # Generate previous week report
-            message = generate_previous_week_report()
+            # Generate week report using actual work period
+            message = generate_previous_week_report(start_time, end_time)
             await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
 
     # Handle task button clicks
