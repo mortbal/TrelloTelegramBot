@@ -26,7 +26,7 @@ Make sure you have Python 3.7 or higher installed on your system.
 Install the required Python packages by running this in console/terminal:
 
 ```bash
-pip install python-telegram-bot requests
+pip install python-telegram-bot requests google-genai
 ```
 
 ### 3. Create a Telegram Bot
@@ -83,12 +83,14 @@ MY_MEMBER_ID = "your_trello_member_id"
 
 # Telegram Bot credentials
 TELEGRAM_BOT_TOKEN = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
-MORTEZAS_CHAT_ID = 123456789  # Your personal chat ID
+PERSONAL_CHAT_ID = 123456789  # Your personal chat ID
 CHAT_IDS = [123456789]  # List of allowed chat IDs
 
 # Allowed group ID (use negative number for groups)
 ALLOWED_GROUP_ID = -1001234567890
 
+#Gememini API key : Leave this empty if you dont want to use ai to summarize tasks 
+GEMINI_API_KEY = ""
 ```
 
 Replace all placeholder values with your actual credentials.

@@ -3,15 +3,30 @@ import requests
 import json
 import os
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, WebAppInfo
+from enum import Enum
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
 
 # Import configuration
 from config import (
-    API_KEY, TOKEN, TODO_LIST_ID, DOING_LIST_ID, DONE_LIST_ID, MY_MEMBER_ID,
-    TELEGRAM_BOT_TOKEN, MORTEZAS_CHAT_ID, CHAT_IDS,
-    ALLOWED_GROUP_ID, MINI_APP_URL
+    API_KEY, TOKEN, TODO_LIST_ID, DOING_LIST_ID, UNDER_REVIEW_LIST_ID, DONE_LIST_ID, MY_MEMBER_ID,
+    TELEGRAM_BOT_TOKEN, PERSONAL_CHAT_ID, GROUP_CHAT_ID
 )
+
+# Label enum
+class TaskLabel(Enum):
+    HIGH_PRIORITY = "High Priority"
+    MEDIUM_PRIORITY = "Medium Priority"
+    LOW_PRIORITY = "Low Priority"
+    BLOCKED = "Blocked"
+
+# List enum
+class TaskList(Enum):
+    TODO = TODO_LIST_ID
+    DOING = DOING_LIST_ID
+    REVIEW = UNDER_REVIEW_LIST_ID
+    DONE = DONE_LIST_ID
 
 # Enable logging
 logging.basicConfig(
@@ -21,65 +36,47 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-
-def is_allowed_group(update: Update) -> bool:
+"""
+Security code 
+only allows bot to work with one group and one private chat 
+"""
+def is_with_allowed_group(update: Update) -> bool:
     """Check if the message is from the allowed group"""
     if update.effective_chat:
         chat_id = update.effective_chat.id
-        if chat_id != ALLOWED_GROUP_ID:
+        if chat_id != GROUP_CHAT_ID:
+            logger.warning(f"Unauthorized access attempt from chat_id: {chat_id}")
+            return False
+    return True
+
+def is_with_allowed_user(update: Update) -> bool:
+    """Check if the message is from the allowed user"""
+    if update.effective_chat:
+        chat_id = update.effective_chat.id
+        if chat_id != PERSONAL_CHAT_ID:
             logger.warning(f"Unauthorized access attempt from chat_id: {chat_id}")
             return False
     return True
 
 
-def get_json_path():
-    """Get the path to TrelloTasks.json"""
-    script_dir = os.path.dirname(__file__)
-    return os.path.join(script_dir, "TrelloTasks.json")
 
-
-def is_day_started():
-    """Check if day is started by checking boolean flag in JSON"""
-    json_path = get_json_path()
+json_path=""
+def get_json_path()->bool:
+    global json_path
+    if json_path == "":
+        """Get the path to TrelloTasks.json"""
+        script_dir = os.path.dirname(__file__)
+        json_path = os.path.join(script_dir, "TrelloTasks.json")
     if not os.path.exists(json_path):
         return False
-
-    try:
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-            return data.get('day_started', False)
-    except:
-        return False
+    else :
+        return True
 
 
-def is_week_started():
-    """Check if week is started by checking boolean flag in JSON"""
-    json_path = get_json_path()
-    if not os.path.exists(json_path):
-        return False
-
-    try:
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-            return data.get('week_started', False)
-    except:
-        return False
-
-
-def start_day(chat_id=None):
-    """Fetch tasks from Trello and save to JSON (equivalent to Start() in old file)"""
-    # Send message immediately if chat_id provided
-    if chat_id:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {
-            'chat_id': chat_id,
-            'text': "✅ Morteza has started his workday"
-        }
-        requests.post(url, data=data)
-
+def fetch_trello_tasks():
+    """Fetch tasks from Trello and update JSON file"""
     tasks_data = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "day_started": True,
         "todo": [],
         "doing": [],
         "done": []
@@ -87,18 +84,15 @@ def start_day(chat_id=None):
 
     params = {'key': API_KEY, 'token': TOKEN}
 
-    # Process TODO list
+    # Fetch TODO tasks
     url = f"https://api.trello.com/1/lists/{TODO_LIST_ID}/cards"
     response = requests.get(url, params=params)
-
     if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
+        for card in response.json():
             card_id = card['id']
-            member_ids = card.get('idMembers', [])
 
-            if MY_MEMBER_ID not in member_ids:
-                # Add me to card
+            # Add me as member if not already added
+            if MY_MEMBER_ID not in card.get('idMembers', []):
                 add_url = f"https://api.trello.com/1/cards/{card_id}/idMembers"
                 add_params = {'key': API_KEY, 'token': TOKEN, 'value': MY_MEMBER_ID}
                 requests.post(add_url, params=add_params)
@@ -118,147 +112,18 @@ def start_day(chat_id=None):
             tasks_data["todo"].append({
                 "id": card_id,
                 "name": card['name'],
-                "description": card.get('desc', ''),
-                "comments": comments
-            })
-
-    # Process DOING list
-    url = f"https://api.trello.com/1/lists/{DOING_LIST_ID}/cards"
-    response = requests.get(url, params=params)
-
-    if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
-            member_ids = card.get('idMembers', [])
-            if MY_MEMBER_ID in member_ids:
-                card_id = card['id']
-
-                # Get comments
-                comments_url = f"https://api.trello.com/1/cards/{card_id}/actions"
-                comments_params = {'key': API_KEY, 'token': TOKEN, 'filter': 'commentCard'}
-                comments_response = requests.get(comments_url, params=comments_params)
-                comments = []
-                if comments_response.status_code == 200:
-                    for comment in comments_response.json():
-                        comments.append({
-                            "author": comment['memberCreator']['fullName'],
-                            "text": comment['data']['text']
-                        })
-
-                tasks_data["doing"].append({
-                    "id": card_id,
-                    "name": card['name'],
-                    "description": card.get('desc', ''),
-                    "comments": comments
-                })
-
-    # Process DONE list
-    url = f"https://api.trello.com/1/lists/{DONE_LIST_ID}/cards"
-    response = requests.get(url, params=params)
-
-    if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
-            member_ids = card.get('idMembers', [])
-            if MY_MEMBER_ID in member_ids:
-                card_id = card['id']
-
-                # Get comments
-                comments_url = f"https://api.trello.com/1/cards/{card_id}/actions"
-                comments_params = {'key': API_KEY, 'token': TOKEN, 'filter': 'commentCard'}
-                comments_response = requests.get(comments_url, params=comments_params)
-                comments = []
-                if comments_response.status_code == 200:
-                    for comment in comments_response.json():
-                        comments.append({
-                            "author": comment['memberCreator']['fullName'],
-                            "text": comment['data']['text']
-                        })
-
-                tasks_data["done"].append({
-                    "id": card_id,
-                    "name": card['name'],
-                    "description": card.get('desc', ''),
-                    "comments": comments
-                })
-
-    # Save to file
-    json_path = get_json_path()
-    with open(json_path, 'w') as f:
-        json.dump(tasks_data, f, indent=2)
-
-
-def get_my_tasks():
-    """Get tasks from JSON file"""
-    json_path = get_json_path()
-
-    if not os.path.exists(json_path):
-        return None
-
-    with open(json_path, 'r') as f:
-        return json.load(f)
-
-
-def fetch_tasks_from_trello():
-    """Fetch tasks from Trello and return data"""
-    tasks_data = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "day_started": is_day_started(),
-        "week_started": is_week_started(),
-        "todo": [],
-        "doing": [],
-        "done": []
-    }
-
-    params = {'key': API_KEY, 'token': TOKEN}
-
-    # Process TODO list
-    url = f"https://api.trello.com/1/lists/{TODO_LIST_ID}/cards"
-    response = requests.get(url, params=params)
-
-    if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
-            card_id = card['id']
-            member_ids = card.get('idMembers', [])
-
-            if MY_MEMBER_ID not in member_ids:
-                # Add me to card
-                add_url = f"https://api.trello.com/1/cards/{card_id}/idMembers"
-                add_params = {'key': API_KEY, 'token': TOKEN, 'value': MY_MEMBER_ID}
-                requests.post(add_url, params=add_params)
-
-            # Get comments
-            comments_url = f"https://api.trello.com/1/cards/{card_id}/actions"
-            comments_params = {'key': API_KEY, 'token': TOKEN, 'filter': 'commentCard'}
-            comments_response = requests.get(comments_url, params=comments_params)
-            comments = []
-            if comments_response.status_code == 200:
-                for comment in comments_response.json():
-                    comments.append({
-                        "author": comment['memberCreator']['fullName'],
-                        "text": comment['data']['text']
-                    })
-
-            tasks_data["todo"].append({
-                "id": card_id,
-                "name": card['name'],
-                "description": card.get('desc', ''),
-                "shortUrl": card.get('shortUrl', ''),
-                "due": card.get('due', ''),
                 "labels": card.get('labels', []),
-                "comments": comments
+                "description": card.get('desc', ''),
+                "comments": comments,
+                "shortUrl": card.get('shortUrl', '')
             })
 
-    # Process DOING list - only my tasks
+    # Fetch DOING tasks
     url = f"https://api.trello.com/1/lists/{DOING_LIST_ID}/cards"
     response = requests.get(url, params=params)
-
     if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
-            member_ids = card.get('idMembers', [])
-            if MY_MEMBER_ID in member_ids:
+        for card in response.json():
+            if MY_MEMBER_ID in card.get('idMembers', []):
                 card_id = card['id']
 
                 # Get comments
@@ -276,22 +141,18 @@ def fetch_tasks_from_trello():
                 tasks_data["doing"].append({
                     "id": card_id,
                     "name": card['name'],
-                    "description": card.get('desc', ''),
-                    "shortUrl": card.get('shortUrl', ''),
-                    "due": card.get('due', ''),
                     "labels": card.get('labels', []),
-                    "comments": comments
+                    "description": card.get('desc', ''),
+                    "comments": comments,
+                    "shortUrl": card.get('shortUrl', '')
                 })
 
-    # Process DONE list
+    # Fetch DONE tasks
     url = f"https://api.trello.com/1/lists/{DONE_LIST_ID}/cards"
     response = requests.get(url, params=params)
-
     if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
-            member_ids = card.get('idMembers', [])
-            if MY_MEMBER_ID in member_ids:
+        for card in response.json():
+            if MY_MEMBER_ID in card.get('idMembers', []):
                 card_id = card['id']
 
                 # Get comments
@@ -309,194 +170,119 @@ def fetch_tasks_from_trello():
                 tasks_data["done"].append({
                     "id": card_id,
                     "name": card['name'],
-                    "description": card.get('desc', ''),
-                    "shortUrl": card.get('shortUrl', ''),
-                    "due": card.get('due', ''),
                     "labels": card.get('labels', []),
-                    "comments": comments
+                    "description": card.get('desc', ''),
+                    "comments": comments,
+                    "shortUrl": card.get('shortUrl', '')
                 })
 
-    return tasks_data
-
-
-def save_tasks_to_json(tasks_data):
-    """Save tasks data to JSON file"""
-    json_path = get_json_path()
+    # Update JSON file
     with open(json_path, 'w') as f:
         json.dump(tasks_data, f, indent=2)
 
 
-def create_task_buttons(tasks_data):
-    """Read tasks from JSON and create task buttons"""
-    # Get top 10 tasks (DOING first, then TODO)
-    doing_tasks = tasks_data.get('doing', []) if tasks_data else []
-    todo_tasks = tasks_data.get('todo', []) if tasks_data else []
+def create_task(title, label_name=None, description=""):
+    """Create a new task in Trello TODO list"""
+    params = {
+        'key': API_KEY,
+        'token': TOKEN,
+        'idList': TODO_LIST_ID,
+        'name': title,
+        'desc': description,
+        'idMembers': [MY_MEMBER_ID]
+    }
 
-    # Combine DOING and TODO with list type, take top 10
-    all_tasks = []
-    for task in doing_tasks:
-        all_tasks.append(('DOING', task))
-    for task in todo_tasks:
-        all_tasks.append(('TODO', task))
+    # Create the card
+    url = "https://api.trello.com/1/cards"
+    response = requests.post(url, params=params)
 
-    top_tasks_with_type = all_tasks[:10]
-
-    if not top_tasks_with_type:
-        return None, None
-
-    # Create buttons for each task
-    keyboard = []
-    top_tasks_info = []
-    for i, (list_type, task) in enumerate(top_tasks_with_type):
-        # Get priority indicator
-        priority_emoji = ""
-        labels = task.get('labels', [])
-        for label in labels:
-            label_name = label.get('name', '').lower()
-            if 'high priority' in label_name:
-                priority_emoji = "🔴 "
-                break
-            elif 'medium priority' in label_name:
-                priority_emoji = "🟡 "
-                break
-            elif 'low priority' in label_name:
-                priority_emoji = "🔵 "
-                break
-
-        button_text = f"{priority_emoji}{list_type}: {task['name']}"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f'task_{i}')])
-        top_tasks_info.append({'list_type': list_type, 'task': task})
-
-    # Add cancel button
-    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data='cancel_tasks')])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    return reply_markup, top_tasks_info
-
-
-def generate_previous_day_report():
-    """Generate previous day report"""
-    yesterday = (datetime.now() - timedelta(days=1)).date()
-
-    # Fetch DONE tasks from Trello
-    params = {'key': API_KEY, 'token': TOKEN}
-    url = f"https://api.trello.com/1/lists/{DONE_LIST_ID}/cards"
-    response = requests.get(url, params=params)
-
-    tasks = []
     if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
-            if MY_MEMBER_ID in card.get('idMembers', []):
-                due_date = card.get('due')
-                if due_date:
-                    task_date = datetime.fromisoformat(due_date.replace('Z', '+00:00')).date()
-                    if task_date == yesterday:
-                        tasks.append({
-                            'name': card['name'],
-                            'shortUrl': card.get('shortUrl', ''),
-                            'due': due_date
-                        })
+        card_data = response.json()
+        card_id = card_data['id']
 
-    # Format report
-    if tasks:
-        message = f"📅 <b>Previous Day Report ({yesterday})</b>\n\n"
-        for task in tasks:
-            message += f"• {task['name']} - <a href=\"{task['shortUrl']}\">🔗 open</a>\n"
-    else:
-        message = f"No tasks completed on {yesterday}"
+        # Add label if provided
+        if label_name:
+            board_id = card_data['idBoard']
+            labels_url = f"https://api.trello.com/1/boards/{board_id}/labels"
+            labels_params = {'key': API_KEY, 'token': TOKEN}
+            labels_response = requests.get(labels_url, params=labels_params)
 
-    return message
+            if labels_response.status_code == 200:
+                labels = labels_response.json()
+                for label in labels:
+                    if label.get('name') == label_name:
+                        label_id = label.get('id')
+                        # Add label to card
+                        label_url = f"https://api.trello.com/1/cards/{card_id}/idLabels"
+                        label_params = {'key': API_KEY, 'token': TOKEN, 'value': label_id}
+                        requests.post(label_url, params=label_params)
+                        break
+
+        # Fetch and update tasks
+        fetch_trello_tasks()
+
+        return card_data
+    return None
 
 
-def generate_today_report(start_time=None, end_time=None):
-    """Generate today's report - optionally filter by time range"""
-    if start_time and end_time:
-        # Use provided time range
-        start_dt = datetime.fromisoformat(start_time)
-        end_dt = datetime.fromisoformat(end_time)
-    else:
-        # Default: use today
-        today = datetime.now().date()
-        start_dt = datetime.combine(today, datetime.min.time())
-        end_dt = datetime.now()
-
-    # Fetch DONE tasks from Trello
+def update_task(task_id, target_column, new_comment=""):
+    """Move a task to target column and optionally add a comment"""
     params = {'key': API_KEY, 'token': TOKEN}
-    url = f"https://api.trello.com/1/lists/{DONE_LIST_ID}/cards"
-    response = requests.get(url, params=params)
 
-    tasks = []
-    if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
-            if MY_MEMBER_ID in card.get('idMembers', []):
-                due_date = card.get('due')
-                if due_date:
-                    task_dt = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
-                    if start_dt <= task_dt <= end_dt:
-                        tasks.append({
-                            'name': card['name'],
-                            'shortUrl': card.get('shortUrl', ''),
-                            'due': due_date
-                        })
+    if target_column in [TaskList.TODO, TaskList.DOING]:
+        # Move to TODO or DOING: just move and unmark as complete
+        update_params = {
+            'key': API_KEY,
+            'token': TOKEN,
+            'idList': target_column.value,
+            'dueComplete': 'false'
+        }
+        url = f"https://api.trello.com/1/cards/{task_id}"
+        response = requests.put(url, params=update_params)
+        success = response.status_code == 200
 
-    # Format report
-    if tasks:
-        message = f"📊 <b>Today's Report</b>\n\n"
-        for task in tasks:
-            message += f"• {task['name']} - <a href=\"{task['shortUrl']}\">🔗 open</a>\n"
+    elif target_column in [TaskList.REVIEW, TaskList.DONE]:
+        # Get current card to find labels
+        card_url = f"https://api.trello.com/1/cards/{task_id}"
+        card_response = requests.get(card_url, params=params)
+
+        if card_response.status_code == 200:
+            card_data = card_response.json()
+            label_ids = [label['id'] for label in card_data.get('idLabels', [])]
+
+            # Remove all labels
+            for label_id in label_ids:
+                delete_label_url = f"https://api.trello.com/1/cards/{task_id}/idLabels/{label_id}"
+                requests.delete(delete_label_url, params=params)
+
+            # Move to REVIEW/DONE, set due date as today, mark as complete
+            today = datetime.now().isoformat()
+            update_params = {
+                'key': API_KEY,
+                'token': TOKEN,
+                'idList': target_column.value,
+                'due': today,
+                'dueComplete': 'true'
+            }
+            url = f"https://api.trello.com/1/cards/{task_id}"
+            response = requests.put(url, params=update_params)
+            success = response.status_code == 200
+        else:
+            success = False
     else:
-        message = f"No tasks completed"
+        success = False
 
-    return message
+    # Add comment if provided
+    if success and new_comment:
+        comment_url = f"https://api.trello.com/1/cards/{task_id}/actions/comments"
+        comment_params = {'key': API_KEY, 'token': TOKEN, 'text': new_comment}
+        requests.post(comment_url, params=comment_params)
 
+    # Fetch and update tasks
+    if success:
+        fetch_trello_tasks()
 
-def generate_previous_week_report(start_time=None, end_time=None):
-    """Generate previous week report - optionally filter by time range"""
-    if start_time and end_time:
-        # Use provided time range
-        start_dt = datetime.fromisoformat(start_time)
-        end_dt = datetime.fromisoformat(end_time)
-    else:
-        # Default: last 7 days
-        end_dt = datetime.now()
-        start_dt = end_dt - timedelta(days=7)
-
-    # Fetch DONE tasks from Trello
-    params = {'key': API_KEY, 'token': TOKEN}
-    url = f"https://api.trello.com/1/lists/{DONE_LIST_ID}/cards"
-    response = requests.get(url, params=params)
-
-    tasks = []
-    if response.status_code == 200:
-        cards = response.json()
-        for card in cards:
-            if MY_MEMBER_ID in card.get('idMembers', []):
-                due_date = card.get('due')
-                if due_date:
-                    task_dt = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
-                    if start_dt <= task_dt <= end_dt:
-                        tasks.append({
-                            'name': card['name'],
-                            'shortUrl': card.get('shortUrl', ''),
-                            'due': task_dt
-                        })
-
-    # Sort by date
-    tasks.sort(key=lambda x: x['due'])
-
-    # Format report
-    if tasks:
-        message = f"📈 <b>Week Report</b>\n\n"
-        for task in tasks:
-            task_date = task['due'].strftime('%Y-%m-%d')
-            message += f"• {task['name']} ({task_date}) - <a href=\"{task['shortUrl']}\">🔗 open</a>\n"
-    else:
-        message = f"No tasks completed"
-
-    return message
+    return success
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -504,13 +290,68 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
 
-    if not is_allowed_group(update):
-        return
+    first_name = update.effective_user.first_name
+    chat_type = update.effective_chat.type
 
-    await update.message.reply_text(
-        "Welcome to Trello Bot! 👋\n\n"
-        "Use /trello to access Trello management menu."
-    )
+    # Show fixed keyboard in private chats
+    if chat_type == "private":
+        # Check day_started status for dynamic button
+        day_started = False
+        if get_json_path():
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+                day_started = data.get('day_started', False)
+
+        day_button_text = "End day" if day_started else "Start day"
+
+        keyboard = [
+            [KeyboardButton("Get tasks"), KeyboardButton("Get cached tasks")],
+            [KeyboardButton(day_button_text), KeyboardButton("Start week")],
+            [KeyboardButton("Get day report"), KeyboardButton("Get week report")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+        await update.message.reply_text(
+            f"Hello {first_name}, use the buttons below to manage your tasks or create new tasks using /task {{task title}}. "
+            f"You can also use /task_high or /task_low to set priority.",
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            f"Hello {first_name}, start getting the menu by typing /trello or create new tasks using /task {{task title}} "
+            f"or replying to a message with /task. You can also use /task_high or /task_low to set priority."
+        )
+
+
+async def task(update: Update, context: ContextTypes.DEFAULT_TYPE, priority=None):
+    """Handle task commands"""
+    label_map = {
+        "high": "High Priority",
+        "med": "Medium Priority",
+        "low": "Low Priority"
+    }
+    label = label_map.get(priority) if priority else None
+    create_task("New Task", label, "")
+
+
+async def task_high(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /task_high command"""
+    await task(update, context, "high")
+
+
+async def task_med(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /task_med command"""
+    await task(update, context, "med")
+
+
+async def task_low(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /task_low command"""
+    await task(update, context, "low")
+
+
+async def public_trello(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /trello in group chat"""
+    await update.message.reply_text("Public Trello function")
 
 
 async def trello(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -518,202 +359,110 @@ async def trello(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
 
-    if not is_allowed_group(update):
+    chat_type = update.effective_chat.type
+
+    # Only work in group chats
+    if chat_type in ["group", "supergroup"]:
+        await public_trello(update, context)
+
+
+
+async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle fixed keyboard button clicks in private chat"""
+    if not update.message or not update.message.text:
         return
 
-    keyboard = [
-        [InlineKeyboardButton("📋 Get Tasks", callback_data='get_tasks_list_btn')],
-        [InlineKeyboardButton("📅 Previous Day Report", callback_data='prev_day_report_btn')],
-        [InlineKeyboardButton("📊 Today Report", callback_data='today_report_btn')],
-        [InlineKeyboardButton("📈 Previous Week Report", callback_data='prev_week_report_btn')],
-        [InlineKeyboardButton("❌ Cancel", callback_data='cancel_reports')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="Select a report:",
-        reply_markup=reply_markup
-    )
-
-
-async def mytrello(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /mytrello command"""
-    if not update.message:
+    chat_type = update.effective_chat.type
+    if chat_type != "private":
         return
 
-    if not is_allowed_group(update):
-        return
+    text = update.message.text
+    first_name = update.effective_user.first_name
 
-    keyboard = []
+    if text == "Start day":
+        # Update day_started to true
+        if get_json_path():
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+        else:
+            data = {"todo": [], "doing": [], "done": []}
 
-    # Day button - show Start OR End based on state
-    if is_day_started():
-        keyboard.append([InlineKeyboardButton("🌙 End Day", callback_data='end_day_btn')])
-    else:
-        keyboard.append([InlineKeyboardButton("🌅 Start Day", callback_data='start_day_btn')])
+        data['day_started'] = True
+        with open(json_path, 'w') as f:
+            json.dump(data, f, indent=2)
 
-    # Week button - show Start OR End based on state
-    if is_week_started():
-        keyboard.append([InlineKeyboardButton("📊 End Week", callback_data='end_week_btn')])
-    else:
-        keyboard.append([InlineKeyboardButton("📅 Start Week", callback_data='start_week_btn')])
+        # Send message with "send to group" button
+        keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_to_group_start')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Task buttons - always show
-    keyboard.append([InlineKeyboardButton("📋 Get Tasks", callback_data='get_tasks_btn')])
-    keyboard.append([InlineKeyboardButton("⚡ Show Cached Tasks", callback_data='show_cached_tasks_btn')])
+        await update.message.reply_text(
+            f"{first_name} started working",
+            reply_markup=reply_markup
+        )
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        # Update keyboard to show "End day"
+        keyboard = [
+            [KeyboardButton("Get tasks"), KeyboardButton("Get cached tasks")],
+            [KeyboardButton("End day"), KeyboardButton("Start week")],
+            [KeyboardButton("Get day report"), KeyboardButton("Get week report")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
 
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="my trello",
-        reply_markup=reply_markup
-    )
+    elif text == "End day":
+        # Update day_started to false
+        if get_json_path():
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+        else:
+            data = {"todo": [], "doing": [], "done": []}
 
+        data['day_started'] = False
+        with open(json_path, 'w') as f:
+            json.dump(data, f, indent=2)
 
-async def create_task(update: Update, context: ContextTypes.DEFAULT_TYPE, priority: str, label_name: str):
-    """Create a new task in Trello with specified priority"""
-    if not update.message:
-        return
+        # Send message with "send to group" button
+        keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_to_group_end')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    if not is_allowed_group(update):
-        return
+        await update.message.reply_text(
+            f"{first_name} finished working",
+            reply_markup=reply_markup
+        )
 
-    # Get title from command arguments
-    title = ' '.join(context.args) if context.args else "new task"
-
-    # Get description from replied-to message
-    description = ""
-    if update.message.reply_to_message and update.message.reply_to_message.text:
-        description = update.message.reply_to_message.text
-
-    # Get all cards in TODO list to find positioning
-    params = {'key': API_KEY, 'token': TOKEN}
-    url = f"https://api.trello.com/1/lists/{TODO_LIST_ID}/cards"
-    response = requests.get(url, params=params)
-
-    position = "bottom"  # Default position
-    if response.status_code == 200:
-        cards = response.json()
-        # Find last card with same priority
-        last_card_pos = None
-        for card in cards:
-            labels = card.get('labels', [])
-            for label in labels:
-                if label.get('name') == label_name:
-                    last_card_pos = card.get('pos')
-                    break
-
-        # If found a card with same priority, position after it
-        if last_card_pos is not None:
-            position = last_card_pos + 1
-
-    # Create the card
-    create_url = "https://api.trello.com/1/cards"
-    create_params = {
-        'key': API_KEY,
-        'token': TOKEN,
-        'idList': TODO_LIST_ID,
-        'name': title,
-        'desc': description,
-        'pos': position,
-        'idMembers': [MY_MEMBER_ID]
-    }
-
-    create_response = requests.post(create_url, params=create_params)
-
-    if create_response.status_code == 200:
-        card_data = create_response.json()
-        card_id = card_data['id']
-
-        # Get the label ID for the priority
-        board_url = f"https://api.trello.com/1/boards/{card_data['idBoard']}/labels"
-        board_params = {'key': API_KEY, 'token': TOKEN}
-        labels_response = requests.get(board_url, params=board_params)
-
-        if labels_response.status_code == 200:
-            labels = labels_response.json()
-            label_id = None
-            for label in labels:
-                if label.get('name') == label_name:
-                    label_id = label.get('id')
-                    break
-
-            # Add label to card
-            if label_id:
-                label_url = f"https://api.trello.com/1/cards/{card_id}/idLabels"
-                label_params = {'key': API_KEY, 'token': TOKEN, 'value': label_id}
-                requests.post(label_url, params=label_params)
-
-        short_url = card_data.get('shortUrl', '')
-        message = f'✅ Task created: "{title}"\nPriority: {priority}\n<a href="{short_url}">🔗 open</a>'
-        await update.message.reply_text(message, parse_mode='HTML')
-    else:
-        await update.message.reply_text("❌ Error creating task")
-
-
-async def task_high(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /task-high command"""
-    await create_task(update, context, "High Priority", "High Priority")
-
-
-async def task_med(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /task-med command"""
-    await create_task(update, context, "Medium Priority", "Medium Priority")
-
-
-async def task_low(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /task-low command"""
-    await create_task(update, context, "Low Priority", "Low Priority")
-
-
-async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /task command (alias for /task-med)"""
-    await create_task(update, context, "Medium Priority", "Medium Priority")
-
-
-async def show(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /show command"""
-    # Check if message exists
-    if not update.message:
-        return
-
-    # Check if message is from allowed group
-    if not is_allowed_group(update):
-        return
-
-    await update.message.reply_text(
-        "Command received: show"
-    )
-
-
-async def web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle data sent from the mini app"""
-    # Check if message exists
-    if not update.message:
-        return
-
-    # Check if message is from allowed group
-    if not is_allowed_group(update):
-        return
-
-    # Get the data sent from the mini app
-    data = update.message.web_app_data.data
-
-    # Send message to group with the button name
-    await update.message.reply_text(
-        f"You clicked: {data}"
-    )
+        # Update keyboard to show "Start day"
+        keyboard = [
+            [KeyboardButton("Get tasks"), KeyboardButton("Get cached tasks")],
+            [KeyboardButton("Start day"), KeyboardButton("Start week")],
+            [KeyboardButton("Get day report"), KeyboardButton("Get week report")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks from inline keyboard"""
-    if not is_allowed_group(update):
+    query = update.callback_query
+    await query.answer()
+
+    # Handle send to group buttons
+    if query.data == 'send_to_group_start':
+        first_name = update.effective_user.first_name
+        message_text = f"{first_name} started working"
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=message_text)
+        await query.message.delete()
         return
 
-    query = update.callback_query
-    await query.answer()  # Acknowledge the button click
+    elif query.data == 'send_to_group_end':
+        first_name = update.effective_user.first_name
+        message_text = f"{first_name} finished working"
+        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=message_text)
+        await query.message.delete()
+        return
+
+    # Group chat buttons - check authorization
+    if not is_with_allowed_group(update):
+        return
 
     # Handle Start Day button
     if query.data == 'start_day_btn':
@@ -1062,46 +811,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.edit_text("No tasks found.")
 
 
-async def setup_commands(app: Application):
-    """Set up bot commands for the menu button"""
-    commands = [
-        BotCommand("start", "Start the bot"),
-        BotCommand("trello", "Trello bot info"),
-        BotCommand("mytrello", "Manage your Trello tasks"),
-        BotCommand("task", "Create medium priority task"),
-        BotCommand("task_high", "Create high priority task"),
-        BotCommand("task_med", "Create medium priority task"),
-        BotCommand("task_low", "Create low priority task")
-    ]
-    await app.bot.set_my_commands(commands)
-    logger.info("Bot commands set up successfully")
-
-
-async def post_init(app: Application):
-    """Initialize bot commands after startup"""
-    await setup_commands(app)
-
 
 def main():
     """Start the bot"""
     # Create application
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Add command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("trello", trello))
-    app.add_handler(CommandHandler("mytrello", mytrello))
     app.add_handler(CommandHandler("task_high", task_high))
     app.add_handler(CommandHandler("task_med", task_med))
     app.add_handler(CommandHandler("task_low", task_low))
     app.add_handler(CommandHandler("task", task))
-    app.add_handler(CommandHandler("show", show))
 
-    # Add web app data handler
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, web_app_data))
-
-    # Add button callback handler (for future use)
+    # Add button callback handler
     app.add_handler(CallbackQueryHandler(button_handler))
+
+    # Add keyboard message handler
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, keyboard_handler))
 
     # Start polling
     logger.info("Bot started! Press Ctrl+C to stop.")
