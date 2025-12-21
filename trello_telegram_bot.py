@@ -10,9 +10,10 @@ from pydantic import BaseModel, Field
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_CHAT_ID, TELEGRAM_PERSONAL_CHAT_ID, GEMINI_API_KEY
 
 # Import Trello functions
+import task_functions
 from task_functions import (
-    get_json_path, json_path, fetch_all_trello_tasks, fetch_tasks_from_trello_api,
-    fetch_tasks_from_json, create_task, update_task
+    get_json_path, fetch_all_trello_tasks, fetch_tasks_from_trello_api,
+    fetch_tasks_from_json, create_task, update_task, get_report, get_card_details
 )
 from trello_enums import Priority, Status
 
@@ -96,7 +97,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check day_started status for dynamic button
         day_started = False
         if get_json_path():
-            with open(json_path, 'r') as f:
+            with open(task_functions.json_path, 'r') as f:
                 data = json.load(f)
                 day_started = data.get('day_started', False)
 
@@ -199,7 +200,27 @@ async def task_low_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def public_trello_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /trello in group chat"""
-    await update.message.reply_text("Public Trello function")
+    # Check authorization
+    if not is_with_allowed_group(update):
+        return
+
+    # Fetch top 10 tasks
+    sorted_tasks = GetTopTasks(10, True)
+
+    # Format plain text message
+    if sorted_tasks:
+        message = "📋 **Current Tasks:**\n\n"
+        for i, task in enumerate(sorted_tasks, 1):
+            task_name = task.get('name', 'Untitled')
+            priority_label = task.get('labels')
+            emoji = get_priority_emoji(priority_label)
+            message += f"{i}. {emoji}{task_name}\n"
+
+        message += "\n💡 Run /task to create new tasks"
+    else:
+        message = "📋 No tasks available.\n\n💡 Run /task to create new tasks"
+
+    await update.message.reply_text(message, parse_mode="Markdown")
 
 
 async def trello_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -212,6 +233,171 @@ async def trello_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Only work in group chats
     if chat_type in ["group", "supergroup"]:
         await public_trello_handler(update, context)
+
+
+def get_priority_emoji(priority_label: str) -> str:
+    """Get emoji for priority label
+
+    Args:
+        priority_label: Priority label text (e.g., "High Priority")
+
+    Returns:
+        Emoji string: 🔴 for high, 🟡 for medium, 🔵 for low, empty for none
+    """
+    if not priority_label:
+        return ""
+
+    if "High" in priority_label:
+        return "🔴 "
+    elif "Medium" in priority_label:
+        return "🟡 "
+    elif "Low" in priority_label:
+        return "🔵 "
+    return ""
+
+
+def generate_day_report() -> tuple:
+    """Generate day report with completed and in-progress tasks
+
+    Returns:
+        Tuple of (report_message: str, has_data: bool)
+    """
+    from datetime import datetime, timezone, timedelta
+    from config import TRELLO_MY_MEMBER_ID
+
+    # Read day_start_date from JSON
+    if not get_json_path():
+        return ("⚠️ No data available. Please start your day first.", False)
+
+    with open(task_functions.json_path, 'r') as f:
+        data = json.load(f)
+
+    day_start_date_str = data.get('day_start_date')
+    if not day_start_date_str:
+        return ("⚠️ No day started. Please start your day first.", False)
+
+    # Parse day_start_date
+    try:
+        day_start = datetime.fromisoformat(day_start_date_str)
+        if day_start.tzinfo is None:
+            day_start = day_start.replace(tzinfo=timezone.utc)
+        else:
+            day_start = day_start.astimezone(timezone.utc)
+
+        # Create date range (start of day to end of day)
+        day_end = day_start + timedelta(days=1)
+    except Exception as e:
+        logger.error(f"Error parsing day_start_date: {e}")
+        return ("⚠️ Error parsing day start date.", False)
+
+    # Get completed tasks from DONE and REVIEW
+    done_tasks = get_report(Status.DONE, day_start, day_end)
+    review_tasks = get_report(Status.REVIEW, day_start, day_end)
+
+    # Filter by user membership
+    completed_tasks = []
+    for task in done_tasks + review_tasks:
+        if TRELLO_MY_MEMBER_ID in task.get('idMembers', []):
+            completed_tasks.append(task)
+
+    # Get all DOING tasks
+    doing_tasks = fetch_tasks_from_json(100, Status.DOING)
+
+    # Format message
+    date_str = day_start.strftime("%Y-%m-%d")
+    message = f"📊 **Day Report for {date_str}**\n\n"
+
+    message += f"✅ **Completed (DONE/REVIEW): {len(completed_tasks)}**\n"
+    if completed_tasks:
+        for task in completed_tasks:
+            task_name = task.get('name', 'Untitled')
+            short_url = task.get('shortUrl', '')
+            message += f"• [{task_name}]({short_url})\n"
+    else:
+        message += "_No completed tasks_\n"
+
+    message += f"\n🔄 **In Progress (DOING): {len(doing_tasks)}**\n"
+    if doing_tasks:
+        for task in doing_tasks:
+            task_name = task.get('name', 'Untitled')
+            short_url = task.get('shortUrl', '')
+            message += f"• [{task_name}]({short_url})\n"
+    else:
+        message += "_No tasks in progress_\n"
+
+    return (message, True)
+
+
+def generate_week_report() -> tuple:
+    """Generate week report with completed and in-progress tasks
+
+    Returns:
+        Tuple of (report_message: str, has_data: bool)
+    """
+    from datetime import datetime, timezone
+    from config import TRELLO_MY_MEMBER_ID
+
+    # Read week_start_date from JSON
+    if not get_json_path():
+        return ("⚠️ No data available. Please start your week first.", False)
+
+    with open(task_functions.json_path, 'r') as f:
+        data = json.load(f)
+
+    week_start_date_str = data.get('week_start_date')
+    if not week_start_date_str:
+        return ("⚠️ No week started. Please start your week first.", False)
+
+    # Parse week_start_date
+    try:
+        week_start = datetime.fromisoformat(week_start_date_str)
+        if week_start.tzinfo is None:
+            week_start = week_start.replace(tzinfo=timezone.utc)
+        else:
+            week_start = week_start.astimezone(timezone.utc)
+
+        # End date is now
+        week_end = datetime.now(timezone.utc)
+    except Exception as e:
+        logger.error(f"Error parsing week_start_date: {e}")
+        return ("⚠️ Error parsing week start date.", False)
+
+    # Get completed tasks from DONE and REVIEW
+    done_tasks = get_report(Status.DONE, week_start, week_end)
+    review_tasks = get_report(Status.REVIEW, week_start, week_end)
+
+    # Filter by user membership
+    completed_tasks = []
+    for task in done_tasks + review_tasks:
+        if TRELLO_MY_MEMBER_ID in task.get('idMembers', []):
+            completed_tasks.append(task)
+
+    # Get all DOING tasks
+    doing_tasks = fetch_tasks_from_json(100, Status.DOING)
+
+    # Format message
+    week_start_str = week_start.strftime("%Y-%m-%d")
+    message = f"📊 **Week Report (from {week_start_str})**\n\n"
+
+    message += f"✅ **Completed (DONE/REVIEW): {len(completed_tasks)}**\n"
+    if completed_tasks:
+        for task in completed_tasks:
+            task_name = task.get('name', 'Untitled')
+            short_url = task.get('shortUrl', '')
+            message += f"• [{task_name}]({short_url})\n"
+    else:
+        message += "_No completed tasks_\n"
+
+    message += f"\n🔄 **In Progress (DOING): {len(doing_tasks)}**\n"
+    if doing_tasks:
+        for task in doing_tasks:
+            task_name = task.get('name', 'Untitled')
+            short_url = task.get('shortUrl', '')
+            message += f"• [{task_name}]({short_url})\n"
+    else:
+        message += "_No tasks in progress_\n"
+
+    return (message, True)
 
 
 def GetTopTasks(limit: int = 10 , refresh:bool =True) -> list:
@@ -272,7 +458,9 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for task in sorted_tasks:
             task_name = task.get('name', 'Untitled')
             task_id = task.get('id', '')
-            button = InlineKeyboardButton(task_name, callback_data=f'task_{task_id}')
+            priority_label = task.get('labels')
+            emoji = get_priority_emoji(priority_label)
+            button = InlineKeyboardButton(f"{emoji}{task_name}", callback_data=f'task_{task_id}')
             keyboard.append([button])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -287,22 +475,26 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for task in sorted_tasks:
             task_name = task.get('name', 'Untitled')
             task_id = task.get('id', '')
-            button = InlineKeyboardButton(task_name, callback_data=f'task_{task_id}')
+            priority_label = task.get('labels')
+            emoji = get_priority_emoji(priority_label)
+            button = InlineKeyboardButton(f"{emoji}{task_name}", callback_data=f'task_{task_id}')
             keyboard.append([button])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text("📋 Cached Tasks:", reply_markup=reply_markup)
 
     elif text == "Start day":
-        # Update day_started to true
+        # Update day_started to true and save current date
+        from datetime import datetime
         if get_json_path():
-            with open(json_path, 'r') as f:
+            with open(task_functions.json_path, 'r') as f:
                 data = json.load(f)
         else:
             data = {"todo": [], "doing": [], "done": []}
 
         data['day_started'] = True
-        with open(json_path, 'w') as f:
+        data['day_start_date'] = datetime.now().isoformat()
+        with open(task_functions.json_path, 'w') as f:
             json.dump(data, f, indent=2)
 
         # Send message with "send to group" button
@@ -310,7 +502,7 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_text(
-            f"{first_name} started working",
+            "morteza started office hours",
             reply_markup=reply_markup
         )
 
@@ -326,22 +518,29 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "End day":
         # Update day_started to false
         if get_json_path():
-            with open(json_path, 'r') as f:
+            with open(task_functions.json_path, 'r') as f:
                 data = json.load(f)
         else:
             data = {"todo": [], "doing": [], "done": []}
 
         data['day_started'] = False
-        with open(json_path, 'w') as f:
+        with open(task_functions.json_path, 'w') as f:
             json.dump(data, f, indent=2)
 
-        # Send message with "send to group" button
-        keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_to_group_end')]]
+        # Generate day report
+        report_message, has_data = generate_day_report()
+
+        # Send report with "send to group" button
+        keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_day_report')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
+        # Store report in context for later send to group
+        context.user_data['last_day_report'] = report_message
+
         await update.message.reply_text(
-            f"{first_name} finished working",
-            reply_markup=reply_markup
+            report_message,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
         )
 
         # Update keyboard to show "Start day"
@@ -353,6 +552,57 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
 
+    elif text == "Start week":
+        # Save week start date
+        from datetime import datetime
+        if get_json_path():
+            with open(task_functions.json_path, 'r') as f:
+                data = json.load(f)
+        else:
+            data = {"todo": [], "doing": [], "done": []}
+
+        data['week_start_date'] = datetime.now().isoformat()
+        with open(task_functions.json_path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        await update.message.reply_text("✅ Week started!")
+
+    elif text == "Get day report":
+        # Generate and display day report
+        report_message, has_data = generate_day_report()
+
+        if has_data:
+            # Send report with "send to group" button
+            keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_day_report')]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            # Store report in context for later send to group
+            context.user_data['last_day_report'] = report_message
+            await update.message.reply_text(
+                report_message,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(report_message)
+
+    elif text == "Get week report":
+        # Generate and display week report
+        report_message, has_data = generate_week_report()
+
+        if has_data:
+            # Send report with "send to group" button
+            keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_week_report')]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            # Store report in context for later send to group
+            context.user_data['last_week_report'] = report_message
+            await update.message.reply_text(
+                report_message,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(report_message)
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button clicks from inline keyboard"""
@@ -361,17 +611,134 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle send to group buttons
     if query.data == 'send_to_group_start':
-        first_name = update.effective_user.first_name
-        message_text = f"{first_name} started working"
+        message_text = "morteza started office hours"
         await context.bot.send_message(chat_id=TELEGRAM_GROUP_CHAT_ID, text=message_text)
-        await query.message.delete()
+        await query.message.edit_text(
+            "✅ Sent to group: morteza started office hours"
+        )
         return
 
-    elif query.data == 'send_to_group_end':
-        first_name = update.effective_user.first_name
-        message_text = f"{first_name} finished working"
-        await context.bot.send_message(chat_id=TELEGRAM_GROUP_CHAT_ID, text=message_text)
-        await query.message.delete()
+    elif query.data == 'send_day_report':
+        # Get report from context
+        report_message = context.user_data.get('last_day_report', '')
+        if report_message:
+            await context.bot.send_message(
+                chat_id=TELEGRAM_GROUP_CHAT_ID,
+                text=report_message,
+                parse_mode="Markdown"
+            )
+            await query.message.edit_text("✅ Day report sent to group!")
+        else:
+            await query.message.edit_text("❌ No report available to send.")
+        return
+
+    elif query.data == 'send_week_report':
+        # Get report from context
+        report_message = context.user_data.get('last_week_report', '')
+        if report_message:
+            await context.bot.send_message(
+                chat_id=TELEGRAM_GROUP_CHAT_ID,
+                text=report_message,
+                parse_mode="Markdown"
+            )
+            await query.message.edit_text("✅ Week report sent to group!")
+        else:
+            await query.message.edit_text("❌ No report available to send.")
+        return
+
+    # Handle task button clicks - show task details and movement options
+    elif query.data.startswith('task_'):
+        task_id = query.data.replace('task_', '')
+
+        # Fetch task details
+        task_card = get_card_details(task_id)
+
+        if task_card:
+            # Format task details message
+            message = f"**{task_card.name}**\n\n"
+
+            # Add priority label if exists
+            if task_card.labels:
+                priority_emoji = get_priority_emoji(task_card.labels)
+                message += f"{priority_emoji}**Priority:** {task_card.labels}\n\n"
+
+            # Add description if exists
+            if task_card.description:
+                message += f"**Description:**\n{task_card.description}\n\n"
+
+            # Add due date if exists
+            if task_card.dueDate:
+                due_str = task_card.dueDate.strftime("%Y-%m-%d %H:%M")
+                status = "✅ Complete" if task_card.dueComplete else "⏳ Pending"
+                message += f"**Due Date:** {due_str} ({status})\n\n"
+
+            # Add comments if exist
+            if task_card.comments:
+                message += f"**Comments ({len(task_card.comments)}):**\n"
+                for i, comment in enumerate(task_card.comments[:3], 1):  # Show first 3
+                    comment_preview = comment[:100] + "..." if len(comment) > 100 else comment
+                    message += f"{i}. {comment_preview}\n"
+                if len(task_card.comments) > 3:
+                    message += f"_...and {len(task_card.comments) - 3} more_\n"
+                message += "\n"
+
+            # Add task link
+            message += f"[View on Trello]({task_card.shortUrl})"
+
+            # Create movement buttons
+            keyboard = [
+                [InlineKeyboardButton("Move to TODO", callback_data=f'move_{task_id}_todo')],
+                [InlineKeyboardButton("Move to DOING", callback_data=f'move_{task_id}_doing')],
+                [InlineKeyboardButton("Move to DONE", callback_data=f'move_{task_id}_done')],
+                [InlineKeyboardButton("Move to REVIEW", callback_data=f'move_{task_id}_review')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Update message to show task details and movement options
+            await query.message.edit_text(
+                message,
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+        else:
+            await query.message.edit_text("❌ Failed to fetch task details.")
+        return
+
+    # Handle task movement
+    elif query.data.startswith('move_'):
+        # Parse callback data: move_{task_id}_{status}
+        parts = query.data.split('_')
+        if len(parts) == 3:
+            task_id = parts[1]
+            status_str = parts[2]
+
+            # Map status string to Status enum
+            status_map = {
+                'todo': Status.TODO,
+                'doing': Status.DOING,
+                'done': Status.DONE,
+                'review': Status.REVIEW
+            }
+            target_status = status_map.get(status_str)
+
+            if target_status:
+                # Read day_start_date from JSON for DONE/REVIEW
+                due_date = None
+                if target_status in [Status.DONE, Status.REVIEW]:
+                    if get_json_path():
+                        with open(task_functions.json_path, 'r') as f:
+                            data = json.load(f)
+                        due_date = data.get('day_start_date')
+
+                # Update the task
+                success = update_task(task_id, target_status, due_date=due_date)
+
+                if success:
+                    await query.message.edit_text(f"✅ Task moved to {status_str.upper()}!")
+                else:
+                    await query.message.edit_text(f"❌ Failed to move task.")
+            else:
+                await query.message.edit_text("❌ Invalid status.")
         return
 
 
