@@ -26,7 +26,7 @@ Make sure you have Python 3.7 or higher installed on your system.
 Install the required Python packages by running this in console/terminal:
 
 ```bash
-pip install python-telegram-bot requests google-genai
+pip install python-telegram-bot requests google-genai python-dateutil
 ```
 
 ### 3. Create a Telegram Bot
