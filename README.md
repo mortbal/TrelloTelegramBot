@@ -31,13 +31,11 @@ If you have the pre-built executable (`TrelloTelegramBot.exe`), you can run the 
 - **Cached Tasks**: Fast task access without API calls using local JSON cache
 - **Message Deletion**: Delete bot messages with `/delete` command
 
-## Setup (this section is for running python - not needed if running exe)
+## Setup 
 
-### 1. Install Python
+### 1. Install Python and dependencies (this section is for running python - not needed if running exe)
 
 Make sure you have Python 3.7 or higher installed on your system.
-
-### 2. Install Dependencies
 
 Install the required Python packages by running this in console/terminal:
 
@@ -45,14 +43,14 @@ Install the required Python packages by running this in console/terminal:
 pip install python-telegram-bot requests google-genai python-dateutil
 ```
 
-### 3. Create a Telegram Bot
+### 2. Create a Telegram Bot
 
 1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
 2. Send `/newbot` and follow the instructions
 3. Choose a name and username for your bot
 4. Copy the **bot token** that BotFather provides (you'll need this for `TELEGRAM_BOT_TOKEN`)
 
-### 4. Get Your Trello Credentials
+### 3. Get Your Trello Credentials
 
 1. **API Key & Token**:
    - Go to [https://trello.com/power-ups/admin](https://trello.com/power-ups/admin)
@@ -64,12 +62,13 @@ pip install python-telegram-bot requests google-genai python-dateutil
    - Add `.json` to the end of the board URL (e.g., `https://trello.com/b/aBcDeFgH/my-board.json`)
    - Search for your list names and copy their `id` values
    - You need IDs for: TODO, DOING, UNDER_REVIEW (optional), and DONE lists
+   - the list titles in trelo dont need to match bot only requires their id 
 
 3. **Member ID**:
    - In the same JSON from step 2, find the `members` array
    - Copy your `id` from your member object
 
-### 5. Get Telegram Group/Chat ID
+### 4. Get Telegram Group/Chat ID
 
 **Method 1: Using Bot API**
 1. Send any message to your bot or add it to a group and send a message
@@ -113,12 +112,18 @@ Create a `config.json` file (or modify the provided the sample) in the project d
 
 Replace all placeholder values with your actual credentials.
 
+**Gemini API (Optional):** The Gemini API is used for AI-powered task title extraction. When you reply to a message with just `/task` (without specifying a title), Gemini analyzes the message content and automatically generates an appropriate task title. If you don't provide a Gemini API key, you'll need to manually specify task titles in your commands.
+
 **Note:** `config.json` is automatically ignored by git to protect your credentials.
 
 ## Running the Bot
-
+based on your setup either run 
 ```bash
 python trello_telegram_bot.py
+```
+or
+```bash
+py trello_telegram_bot.py
 ```
 
 The bot will start and log "Bot started! Press Ctrl+C to stop."
@@ -136,6 +141,87 @@ The bot will start and log "Bot started! Press Ctrl+C to stop."
 - `/delete` - Reply to a bot message with this command to delete it
 
 **Tip:** Reply to any message with a task command to use that message as the task description!
+
+### Creating Tasks - Different Scenarios
+
+The bot provides flexible ways to create tasks with different priority levels:
+
+#### Scenario 1: Basic Task Creation
+Create a task with just a title:
+```
+/task Fix login bug
+```
+- Creates a **Medium Priority** task
+- Title: "Fix login bug"
+- Description: Empty
+- Added to TODO list
+- You are automatically assigned as a member
+
+#### Scenario 2: High/Low Priority Tasks
+Use priority-specific commands:
+```
+/task_high Deploy to production
+/task_low Update documentation
+```
+- `/task_high` - Creates task with 🔴 **High Priority** label
+- `/task_med` - Creates task with 🟡 **Medium Priority** label (same as `/task`)
+- `/task_low` - Creates task with 🔵 **Low Priority** label
+- Requires corresponding labels in your Trello board
+
+#### Scenario 3: Reply-to-Create (Recommended for Details)
+Reply to any message with a task command to use that message as the description:
+
+**Example 1 - With Manual Title:**
+```
+User: "The user authentication is failing when using OAuth.
+       Error appears on line 234 in auth.py"
+
+You reply: /task_high Fix OAuth authentication
+```
+
+**Result:**
+- Title: "Fix OAuth authentication"
+- Description: "The user authentication is failing when using OAuth. Error appears on line 234 in auth.py"
+- Priority: High
+- The original message content becomes the full task description
+
+**Example 2 - AI-Generated Title (Requires Gemini API):**
+```
+User: "The user authentication is failing when using OAuth.
+       Error appears on line 234 in auth.py"
+
+You reply: /task
+```
+
+**Result:**
+- Title: Automatically extracted by Gemini AI (e.g., "Fix OAuth Authentication Issue")
+- Description: "The user authentication is failing when using OAuth. Error appears on line 234 in auth.py"
+- Priority: Medium (default)
+- Gemini analyzes the message and creates an appropriate title for you
+  
+  To use AI-generated task titles, you need to get an API key from https://aistudio.google.com/api-keys. note that when you provide the api key the usage will be counted towards your Gemini usage limits . if you dont want to use Gemini just leave the Gemini Api key field in `config.json` empty
+
+  Gemini offers a free tier (at least at the moment this was written) with 10 requests per minute, 20 requests per day for Gemini 2.5 Flash lite which should be enough for most users.
+
+  If for any reason Gemini fails to generate a task title (usage limit reached, invalid API key, timeout, etc.), the task will be given the default title "New Task".
+
+#### Scenario 4: Creating from Group Messages
+Works in group chats too! Reply to any discussion:
+```
+Team Member: "We need to implement dark mode for the dashboard"
+
+You reply: /task Add dark mode to dashboard
+```
+- Captures the context from group discussions
+- Turns conversations into actionable tasks
+- Great for meeting notes and brainstorming sessions
+
+#### What Happens When You Create a Task?
+1. ✅ Task is created in your TODO list on Trello
+2. 👤 You are automatically assigned as a member
+3. 🏷️ Priority label is added 
+4. 📝 Description is saved (if created via reply)
+5. 🔗 You receive a confirmation with a link to the Trello card
 
 ### Typical Workflow
 
@@ -190,7 +276,6 @@ TrelloTelegramBot/
 ├── config.py               # Configuration loader (reads config.json)
 ├── config.json             # Your credentials (not in git)
 ├── TrelloTasks.json        # Local task cache (auto-generated)
-├── mini_app.html           # Web interface (if applicable)
 └── README.md               # This file
 ```
 
