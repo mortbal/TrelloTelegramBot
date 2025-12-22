@@ -2,7 +2,22 @@
 
 A personal Trello task management bot for Telegram. This bot is designed for single-user use and helps you manage your Trello tasks directly from Telegram with interactive buttons and automated reporting.
 
-**Note:** Due to security concerns, this bot is designed to work for a single person only. You can run this bot on your server or PC. When running from a PC, the bot only responds to Telegram messages when your PC is online and the script is running.
+**Note:** Due to security concerns, this bot is designed to work for a single person only. You can run this bot on your server or PC. When running from a PC, the bot only responds to Telegram messages when your PC is online and the script/executable is running.
+
+## Quick Start (Using Packaged Build)
+
+If you have the pre-built executable (`TrelloTelegramBot.exe`), you can run the bot without installing Python:
+
+1. **Download the executable** or build it yourself (see "Building Executable" section below)
+2. **modify configuration file** - modify the `config.json` file in the same directory as the exe (see "Configuration" section)
+3. **Optional: Create task cache** - Place `TrelloTasks.json` in the same directory (will be auto-generated if missing)
+4. **Run the bot** - Double-click `TrelloTelegramBot.exe` or run it from terminal:
+   ```bash
+   TrelloTelegramBot.exe
+   ```
+5. The bot will start and show "Bot started! Press Ctrl+C to stop."
+
+**Important:** Keep `config.json` and `TrelloTasks.json` in the same folder as the executable!
 
 ## What can this bot do?
 
@@ -14,8 +29,9 @@ A personal Trello task management bot for Telegram. This bot is designed for sin
 - **Quick Task Creation**: Create tasks via commands (`/task`, `/task_high`, `/task_med`, `/task_low`)
 - **Reply-to-Create**: Create tasks by replying to messages (message becomes task description)
 - **Cached Tasks**: Fast task access without API calls using local JSON cache
+- **Message Deletion**: Delete bot messages with `/delete` command
 
-## Setup
+## Setup (this section is for running python - not needed if running exe)
 
 ### 1. Install Python
 
@@ -43,10 +59,11 @@ pip install python-telegram-bot requests google-genai python-dateutil
    - Get your API Key
    - Click on "Token" to generate your token
 
-2. **List IDs** (TODO, DOING, DONE):
+2. **List IDs** (TODO, DOING, UNDER_REVIEW, DONE):
    - Open your Trello board
    - Add `.json` to the end of the board URL (e.g., `https://trello.com/b/aBcDeFgH/my-board.json`)
    - Search for your list names and copy their `id` values
+   - You need IDs for: TODO, DOING, UNDER_REVIEW (optional), and DONE lists
 
 3. **Member ID**:
    - In the same JSON from step 2, find the `members` array
@@ -70,30 +87,33 @@ pip install python-telegram-bot requests google-genai python-dateutil
 
 ## Configuration
 
-Create a `config.py` file in the project directory with your credentials:
+Create a `config.json` file (or modify the provided the sample) in the project directory with your credentials:
 
-```python
-# Trello API credentials
-API_KEY = "your_trello_api_key_here"
-TOKEN = "your_trello_token_here"
-TODO_LIST_ID = "your_todo_list_id"
-DOING_LIST_ID = "your_doing_list_id"
-DONE_LIST_ID = "your_done_list_id"
-MY_MEMBER_ID = "your_trello_member_id"
-
-# Telegram Bot credentials
-TELEGRAM_BOT_TOKEN = "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
-PERSONAL_CHAT_ID = 123456789  # Your personal chat ID
-CHAT_IDS = [123456789]  # List of allowed chat IDs
-
-# Allowed group ID (use negative number for groups)
-ALLOWED_GROUP_ID = -1001234567890
-
-#Gememini API key : Leave this empty if you dont want to use ai to summarize tasks 
-GEMINI_API_KEY = ""
+```json
+{
+  "trello": {
+    "api_key": "your_trello_api_key_here",
+    "token": "your_trello_token_here",
+    "todo_list_id": "your_todo_list_id",
+    "doing_list_id": "your_doing_list_id",
+    "under_review_list_id": "your_under_review_list_id",
+    "done_list_id": "your_done_list_id",
+    "my_member_id": "your_trello_member_id"
+  },
+  "telegram": {
+    "bot_token": "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz",
+    "personal_chat_id": "123456789",
+    "group_chat_id": -1001234567890
+  },
+  "gemini": {
+    "api_key": "your_gemini_api_key_or_leave_empty"
+  }
+}
 ```
 
 Replace all placeholder values with your actual credentials.
+
+**Note:** `config.json` is automatically ignored by git to protect your credentials.
 
 ## Running the Bot
 
@@ -107,24 +127,25 @@ The bot will start and log "Bot started! Press Ctrl+C to stop."
 
 ### Commands
 
-- `/start` - Welcome message
-- `/trello` - Quick access to reports and task list
-- `/mytrello` - Main task management menu (start/end day/week, manage tasks)
+- `/start` - Welcome message with bot introduction
+- `/trello` - Quick access to reports and task management (works in both private and group chats)
 - `/task [title]` - Create a medium priority task
 - `/task_high [title]` - Create a high priority task
 - `/task_med [title]` - Create a medium priority task
 - `/task_low [title]` - Create a low priority task
+- `/delete` - Reply to a bot message with this command to delete it
 
 **Tip:** Reply to any message with a task command to use that message as the task description!
 
 ### Typical Workflow
 
-1. **Start Your Day**: `/mytrello` → Click "Start Day"
-2. **View Tasks**: `/mytrello` → Click "Get Tasks"
+1. **Start Your Day**: `/trello` → Click "Start Day"
+2. **View Tasks**: `/trello` → Click "Get Tasks" → Select status (TODO, DOING, REVIEW, DONE)
 3. **Start Working**: Click on a TODO task → It moves to DOING and shows description
-4. **Complete Task**: Click on a DOING task → It moves to DONE
-5. **End Your Day**: `/mytrello` → Click "End Day" → Automatic report generated
+4. **Complete Task**: Click on a DOING task → Choose REVIEW or DONE
+5. **End Your Day**: `/trello` → Click "End Day" → Automatic report generated
 6. **Weekly Reports**: Start/End Week buttons work the same way
+7. **Delete Messages**: Reply to any bot message with `/delete` to remove it
 
 ## Features
 
@@ -132,7 +153,7 @@ The bot will start and log "Bot started! Press Ctrl+C to stop."
 The bot records actual start/end times for your workday/week, so reports are accurate regardless of server timezone differences.
 
 ### Priority-Based Task Display
-Tasks are displayed with color-coded priority indicators:
+Tasks are displayed with color-coded priority indicators for this to work you will need labels with names `High Priority` , `Medium Priority` or `Low Priority` in your trello board and at least one should be assigned to your card. if no label on card exists it will be treated as medium priority :
 - 🔴 High Priority
 - 🟡 Medium Priority
 - 🔵 Low Priority
@@ -140,22 +161,46 @@ Tasks are displayed with color-coded priority indicators:
 ### Automatic Reports
 When you end your day or week, the bot automatically generates a report of all completed tasks during that period.
 
+## Building Executable
+
+To build the executable yourself using PyInstaller:
+
+1. **Install PyInstaller**:
+   ```bash
+   pip install pyinstaller
+   ```
+
+2. **Build the executable**:
+   ```bash
+   pyinstaller --onefile --name TrelloTelegramBot trello_telegram_bot.py
+   ```
+
+3. **Locate the executable**:
+   - The exe will be created in the `dist` folder
+   - Copy `TrelloTelegramBot.exe` to your desired location
+   - Make sure `config.json` is in the same directory as the exe
+
 ## File Structure
 
 ```
 TrelloTelegramBot/
 ├── trello_telegram_bot.py  # Main bot script
-├── config.py               # Your credentials (not in git)
+├── task_functions.py       # Trello task management functions
+├── trello_enums.py         # Priority and Status enumerations
+├── config.py               # Configuration loader (reads config.json)
+├── config.json             # Your credentials (not in git)
 ├── TrelloTasks.json        # Local task cache (auto-generated)
+├── mini_app.html           # Web interface (if applicable)
 └── README.md               # This file
 ```
 
 ## Security Notes
 
-- Never commit `config.py` to version control
+- **Never commit `config.json`** to version control (it's automatically ignored by .gitignore)
 - Keep your bot token and API credentials secure
 - The bot is designed for single-user use only
-- Only messages from `ALLOWED_GROUP_ID` will be processed
+- Only messages from configured chat IDs will be processed
+- When sharing the executable, never include `config.json` with your credentials
 
 ## License
 

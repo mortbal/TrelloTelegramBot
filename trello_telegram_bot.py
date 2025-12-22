@@ -94,18 +94,21 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Show fixed keyboard in private chats
     if chat_type == "private":
-        # Check day_started status for dynamic button
+        # Check day_started and week_started status for dynamic buttons
         day_started = False
+        week_started = False
         if get_json_path():
             with open(task_functions.json_path, 'r') as f:
                 data = json.load(f)
                 day_started = data.get('day_started', False)
+                week_started = data.get('week_started', False)
 
         day_button_text = "End day" if day_started else "Start day"
+        week_button_text = "End week" if week_started else "Start week"
 
         keyboard = [
             [KeyboardButton("Get tasks"), KeyboardButton("Get cached tasks")],
-            [KeyboardButton(day_button_text), KeyboardButton("Start week")],
+            [KeyboardButton(day_button_text), KeyboardButton(week_button_text)],
             [KeyboardButton("Get day report"), KeyboardButton("Get week report")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -498,22 +501,24 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             json.dump(data, f, indent=2)
 
         # Send message with "send to group" button
-        keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_to_group_start')]]
+        keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_day_start')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            "morteza started office hours",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text("✅ Day started!", reply_markup=reply_markup)
 
         # Update keyboard to show "End day"
+        # Check week_started status
+        week_started = data.get('week_started', False)
+        week_button_text = "End week" if week_started else "Start week"
+
         keyboard = [
             [KeyboardButton("Get tasks"), KeyboardButton("Get cached tasks")],
-            [KeyboardButton("End day"), KeyboardButton("Start week")],
+            [KeyboardButton("End day"), KeyboardButton(week_button_text)],
             [KeyboardButton("Get day report"), KeyboardButton("Get week report")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
+        msg = await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
+        await asyncio.sleep(1)
+        await msg.delete()
 
     elif text == "End day":
         # Update day_started to false
@@ -544,13 +549,19 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Update keyboard to show "Start day"
+        # Check week_started status
+        week_started = data.get('week_started', False)
+        week_button_text = "End week" if week_started else "Start week"
+
         keyboard = [
             [KeyboardButton("Get tasks"), KeyboardButton("Get cached tasks")],
-            [KeyboardButton("Start day"), KeyboardButton("Start week")],
+            [KeyboardButton("Start day"), KeyboardButton(week_button_text)],
             [KeyboardButton("Get day report"), KeyboardButton("Get week report")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
+        msg = await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
+        await asyncio.sleep(1)
+        await msg.delete()
 
     elif text == "Start week":
         # Save week start date
@@ -561,11 +572,73 @@ async def keyboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             data = {"todo": [], "doing": [], "done": []}
 
+        data['week_started'] = True
         data['week_start_date'] = datetime.now().isoformat()
         with open(task_functions.json_path, 'w') as f:
             json.dump(data, f, indent=2)
 
-        await update.message.reply_text("✅ Week started!")
+        # Send message with "send to group" button
+        keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_week_start')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("✅ Week started!", reply_markup=reply_markup)
+
+        # Update keyboard to show "End week"
+        # Check day_started status
+        day_started = data.get('day_started', False)
+        day_button_text = "End day" if day_started else "Start day"
+
+        keyboard = [
+            [KeyboardButton("Get tasks"), KeyboardButton("Get cached tasks")],
+            [KeyboardButton(day_button_text), KeyboardButton("End week")],
+            [KeyboardButton("Get day report"), KeyboardButton("Get week report")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        msg = await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
+        await asyncio.sleep(1)
+        await msg.delete()
+
+    elif text == "End week":
+        # Update week_started to false
+        if get_json_path():
+            with open(task_functions.json_path, 'r') as f:
+                data = json.load(f)
+        else:
+            data = {"todo": [], "doing": [], "done": []}
+
+        data['week_started'] = False
+        with open(task_functions.json_path, 'w') as f:
+            json.dump(data, f, indent=2)
+
+        # Generate week report
+        report_message, has_data = generate_week_report()
+
+        # Send report with "send to group" button
+        keyboard = [[InlineKeyboardButton("Send to group", callback_data='send_week_report')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Store report in context for later send to group
+        context.user_data['last_week_report'] = report_message
+
+        await update.message.reply_text(
+            report_message,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+
+        # Update keyboard to show "Start week"
+        # Check day_started status
+        day_started = data.get('day_started', False)
+        day_button_text = "End day" if day_started else "Start day"
+
+        keyboard = [
+            [KeyboardButton("Get tasks"), KeyboardButton("Get cached tasks")],
+            [KeyboardButton(day_button_text), KeyboardButton("Start week")],
+            [KeyboardButton("Get day report"), KeyboardButton("Get week report")]
+        ]
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        msg = await update.message.reply_text("Keyboard updated", reply_markup=reply_markup)
+        await asyncio.sleep(1)
+        await msg.delete()
 
     elif text == "Get day report":
         # Generate and display day report
@@ -610,12 +683,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     # Handle send to group buttons
-    if query.data == 'send_to_group_start':
-        message_text = "morteza started office hours"
-        await context.bot.send_message(chat_id=TELEGRAM_GROUP_CHAT_ID, text=message_text)
-        await query.message.edit_text(
-            "✅ Sent to group: morteza started office hours"
-        )
+    if query.data == 'send_day_start':
+        await context.bot.send_message(chat_id=TELEGRAM_GROUP_CHAT_ID, text="✅ Day started!")
+        await query.message.edit_text("✅ Sent to group: Day started!")
+        return
+
+    elif query.data == 'send_week_start':
+        await context.bot.send_message(chat_id=TELEGRAM_GROUP_CHAT_ID, text="✅ Week started!")
+        await query.message.edit_text("✅ Sent to group: Week started!")
         return
 
     elif query.data == 'send_day_report':
@@ -742,6 +817,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+async def delete_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /delete command - deletes the message that was replied to"""
+    message = update.message
+
+    # Check if this is a reply to a message
+    if not message.reply_to_message:
+        await message.reply_text("⚠️ Please reply to a message with /delete to delete it.")
+        return
+
+    # Check if the replied-to message is from the bot
+    if message.reply_to_message.from_user.id != context.bot.id:
+        await message.reply_text("⚠️ I can only delete my own messages.")
+        return
+
+    try:
+        # Delete the replied-to message
+        await message.reply_to_message.delete()
+        # Also delete the command message
+        await message.delete()
+    except Exception as e:
+        await message.reply_text(f"❌ Failed to delete message: {str(e)}")
+
+
 def main():
     """Start the bot"""
     # Create application
@@ -754,6 +852,7 @@ def main():
     app.add_handler(CommandHandler("task_med", task_med_handler))
     app.add_handler(CommandHandler("task_low", task_low_handler))
     app.add_handler(CommandHandler("task", task_handler))
+    app.add_handler(CommandHandler("delete", delete_handler))
 
     # Add button callback handler
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -762,7 +861,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, keyboard_handler))
 
     # Start polling
-    logger.info("Bot started! Press Ctrl+C to stop.")
+    logger.info("Bot started! Press Ctrl+C to stop. version 0.1")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
